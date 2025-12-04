@@ -729,8 +729,12 @@
         bridgeDirection = tx.direction;
         updateNetworkUI();
         
-        // Show bridge tab and progress
-        $('bridgeTab').click();
+        // Show bridge section
+        showBridge();
+        
+        // Hide form, show progress
+        $('connectWalletBtn').classList.add('hidden');
+        $('walletInfo').classList.remove('hidden');
         $('bridgeForm').classList.add('hidden');
         $('bridgeProgress').classList.remove('hidden');
         
@@ -1062,10 +1066,8 @@
             $('walletShort').textContent = shortAddr;
             $('walletIndicator').classList.remove('hidden');
             
-            // Update header connect button
-            $('headerConnectBtn').textContent = shortAddr;
-            $('headerConnectBtn').classList.remove('btn-primary');
-            $('headerConnectBtn').classList.add('bg-green-600/20', 'border', 'border-green-500/50');
+            // Hide header connect button (wallet indicator shows the address)
+            $('headerConnectBtn').classList.add('hidden');
 
             // show form
             $('bridgeForm').classList.remove('hidden');
@@ -1702,43 +1704,51 @@
         setProgress(80, 'Switching to Arc Testnet...');
         updateStepStatus('step4','pending');
         try {
+            // Refresh provider first
+            provider = new ethers.providers.Web3Provider(window.ethereum);
+            
             // switch network to Arc
-            try {
-                await window.ethereum.request({ method:'wallet_switchEthereumChain', params:[{ chainId: CONFIG.ARC.CHAIN_ID_HEX }] });
-            } catch (swErr) {
-                if (swErr.code === 4902 || swErr.message?.includes('Unrecognized chain') || swErr.message?.includes('wallet_addEthereumChain')) {
-                    setProgress(80, 'Adding Arc Testnet network to wallet...');
-                    try {
-                        await window.ethereum.request({
-                            method: 'wallet_addEthereumChain',
-                            params: [{
-                                chainId: CONFIG.ARC.CHAIN_ID_HEX,
-                                chainName: CONFIG.ARC.NAME,
-                                rpcUrls: ['https://rpc-testnet.arcscan.net'],
-                                nativeCurrency: { name:'tUSDC', symbol:'USDC', decimals: 18 },
-                                blockExplorerUrls: [CONFIG.ARC.EXPLORER]
-                            }]
-                        });
-                        await window.ethereum.request({ method:'wallet_switchEthereumChain', params:[{ chainId: CONFIG.ARC.CHAIN_ID_HEX }] });
-                    } catch (addErr) {
-                        throw new Error('Please add Arc Testnet to your wallet manually:\n\nNetwork: Arc Testnet\nRPC: https://rpc-testnet.arcscan.net\nChain ID: 1660000000026\nSymbol: USDC\nExplorer: https://testnet.arcscan.net');
+            const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+            if (currentChainId !== CONFIG.ARC.CHAIN_ID_HEX) {
+                try {
+                    await window.ethereum.request({ method:'wallet_switchEthereumChain', params:[{ chainId: CONFIG.ARC.CHAIN_ID_HEX }] });
+                } catch (swErr) {
+                    if (swErr.code === 4902 || swErr.message?.includes('Unrecognized chain') || swErr.message?.includes('wallet_addEthereumChain')) {
+                        setProgress(80, 'Adding Arc Testnet network to wallet...');
+                        try {
+                            await window.ethereum.request({
+                                method: 'wallet_addEthereumChain',
+                                params: [{
+                                    chainId: CONFIG.ARC.CHAIN_ID_HEX,
+                                    chainName: CONFIG.ARC.NAME,
+                                    rpcUrls: [CONFIG.ARC.RPC],
+                                    nativeCurrency: { name:'tUSDC', symbol:'USDC', decimals: 18 },
+                                    blockExplorerUrls: [CONFIG.ARC.EXPLORER]
+                                }]
+                            });
+                            await window.ethereum.request({ method:'wallet_switchEthereumChain', params:[{ chainId: CONFIG.ARC.CHAIN_ID_HEX }] });
+                        } catch (addErr) {
+                            throw new Error('Please add Arc Testnet to your wallet manually:\n\nNetwork: Arc Testnet\nRPC: ' + CONFIG.ARC.RPC + '\nChain ID: 5042002\nSymbol: USDC\nExplorer: ' + CONFIG.ARC.EXPLORER);
+                        }
+                    } else if (swErr.code === 4001) {
+                        throw new Error('Network switch rejected. Please approve the network switch to continue.');
+                    } else {
+                        throw new Error('Failed to switch to Arc: ' + (swErr.message || swErr));
                     }
-                } else if (swErr.code === 4001) {
-                    throw new Error('Network switch rejected. Please approve the network switch to continue.');
-                } else {
-                    throw new Error('Failed to switch to Arc: ' + (swErr.message || swErr));
                 }
             }
             
             await new Promise(r => setTimeout(r, 1000));
             
+            // Recreate provider and signer after network switch
             provider = new ethers.providers.Web3Provider(window.ethereum);
             signer = provider.getSigner();
             
             // Verify we're on Arc network
             const network = await provider.getNetwork();
+            console.log('Current network:', network);
             if (network.chainId !== CONFIG.ARC.CHAIN_ID) {
-                throw new Error('Wallet is not on Arc Testnet. Please switch manually and try again.');
+                throw new Error('Wallet is not on Arc Testnet (chainId: ' + network.chainId + '). Please switch manually and try again.');
             }
             
             // Check USDC balance for gas (Arc uses USDC as native gas)
@@ -1746,8 +1756,8 @@
             const gasFormatted = ethers.utils.formatEther(gasBalance);
             console.log('Arc native USDC balance (for gas):', gasFormatted);
             
-            if (gasBalance.lt(ethers.utils.parseEther('0.01'))) {
-                throw new Error('Insufficient USDC balance on Arc for gas. You need at least 0.01 USDC.\n\nGet testnet USDC at: https://faucet.circle.com');
+            if (gasBalance.lt(ethers.utils.parseEther('0.001'))) {
+                throw new Error('Insufficient USDC balance on Arc for gas. You need at least 0.001 USDC.\n\nGet testnet USDC at: https://faucet.circle.com');
             }
 
             setProgress(85, 'Calling receiveMessage on Arc...');
@@ -1789,10 +1799,14 @@
             let gasLimit = 500000;
             try {
                 const estimated = await transmitter.estimateGas.receiveMessage(msgBytes, attBytes);
-                gasLimit = estimated.mul(130).div(100);
+                gasLimit = estimated.mul(150).div(100); // 50% buffer
                 console.log('Estimated gas:', estimated.toString());
             } catch (estErr) {
                 console.warn('Gas estimation failed:', estErr);
+                // Check if message was already processed
+                if (estErr.message?.includes('Nonce already used') || estErr.message?.includes('already received')) {
+                    throw new Error('This message has already been processed. Tokens should already be in your wallet.');
+                }
             }
 
             const mintTx = await transmitter.receiveMessage(msgBytes, attBytes, { gasLimit });
@@ -1820,16 +1834,6 @@
     $('swapNetworksBtn').addEventListener('click', swapNetworks);
 
     // tabs - removed (new UI doesn't use tabs)
-    // $('trackerTab').addEventListener('click', ...)
-    // $('bridgeTab').addEventListener('click', ...)
-
-    // Header connect button sync
-    function updateHeaderButton() {
-        if (userAddress) {
-            $('headerConnectBtn').textContent = userAddress.slice(0,6) + '...' + userAddress.slice(-4);
-            $('headerConnectBtn').classList.add('bg-green-600');
-        }
-    }
 
     // init
     resetProgressUI();
