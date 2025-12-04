@@ -514,6 +514,11 @@
             <div id="noPendingMsg" class="hidden text-center py-8">
                 <p class="text-gray-500">No pending transactions</p>
             </div>
+            <div id="clearAllBtn" class="hidden mt-4 pt-4 border-t border-gray-700">
+                <button onclick="clearAllPendingTxs()" class="w-full px-4 py-2 bg-red-600/20 hover:bg-red-600/40 text-red-400 rounded-lg text-sm font-medium transition-all border border-red-600/30">
+                    🗑️ Clear All Pending Transactions
+                </button>
+            </div>
         </div>
     </div>
     
@@ -662,9 +667,11 @@
         if (pending.length === 0) {
             listEl.classList.add('hidden');
             noMsgEl.classList.remove('hidden');
+            $('clearAllBtn').classList.add('hidden');
         } else {
             listEl.classList.remove('hidden');
             noMsgEl.classList.add('hidden');
+            $('clearAllBtn').classList.remove('hidden');
             
             listEl.innerHTML = pending.map(tx => {
                 const direction = tx.direction === 'arc-to-sepolia' ? 'Arc → Sepolia' : 'Sepolia → Arc';
@@ -676,6 +683,9 @@
                     <div class="p-3 bg-slate-800/50 rounded-lg border border-${statusColor}-500/30">
                         <div class="flex items-center justify-between mb-2">
                             <span class="text-white font-medium text-sm">${tx.amount} USDC</span>
+                            <button onclick="removeSinglePendingTx('${tx.burnTxHash}')" class="text-gray-500 hover:text-red-400 text-xs">✕</button>
+                        </div>
+                        <div class="flex items-center justify-between mb-1">
                             <span class="text-${statusColor}-400 text-xs">${statusText}</span>
                         </div>
                         <p class="text-gray-500 text-xs">${direction}</p>
@@ -699,6 +709,23 @@
     
     function hidePendingModal() {
         $('pendingModal').classList.add('hidden');
+    }
+    
+    // Clear all pending transactions
+    function clearAllPendingTxs() {
+        if (confirm('Are you sure you want to clear all pending transactions?\n\nOnly do this if the tokens are already in your wallet or if the transactions failed.')) {
+            localStorage.removeItem(STORAGE_KEY);
+            updatePendingIndicator();
+            showPendingModal(); // Refresh modal
+        }
+    }
+    
+    // Remove single pending tx
+    function removeSinglePendingTx(burnTxHash) {
+        if (confirm('Remove this transaction from pending list?')) {
+            removePendingTx(burnTxHash);
+            showPendingModal(); // Refresh modal
+        }
     }
     
     function getTimeAgo(timestamp) {
@@ -810,8 +837,21 @@
             setTimeout(resetBridge, 4000);
         } catch (e) {
             console.error('Manual mint error:', e);
+            const errorMsg = e?.message || String(e);
+            
+            // If message was already processed, remove from pending and show success
+            if (errorMsg.includes('already been processed') || errorMsg.includes('Nonce already used')) {
+                removePendingTx(currentPendingTx.burnTxHash);
+                currentPendingTx = null;
+                setProgress(100, '✅ Tokens already in your wallet!');
+                $('successMessage').classList.remove('hidden');
+                $('mintReadySection').classList.add('hidden');
+                setTimeout(resetBridge, 4000);
+                return;
+            }
+            
             $('errorMessage').classList.remove('hidden');
-            $('errorDetail').textContent = (e?.message || e).slice(0, 2000);
+            $('errorDetail').textContent = errorMsg.slice(0, 2000);
             $('mintReadySection').classList.remove('hidden');
         }
     }
